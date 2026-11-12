@@ -19,7 +19,7 @@ struct LoginView: View {
                     .foregroundColor(.teal)
             }
 
-            Text("Cuidado familiar")
+            Text("Dosis Compartida")
                 .font(.largeTitle.bold())
             Text("Coordinación de medicamentos")
                 .foregroundColor(.secondary)

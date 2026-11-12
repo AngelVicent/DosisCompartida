@@ -4,15 +4,25 @@ import SwiftUI
 
 struct MedicinasView: View {
     @EnvironmentObject var app: AppState
+    @State private var itemParaReponer: ItemInventario?
 
     var body: some View {
         NavigationStack {
             List {
+                if let error = app.errorDatos {
+                    Section {
+                        Label(error, systemImage: "wifi.exclamationmark")
+                            .foregroundColor(.orange)
+                    }
+                }
+
                 Section("Inventario") {
                     ForEach(app.inventario) { item in
-                        FilaInventario(item: item) {
-                            app.enviarAFarmacia(item.id)
-                        }
+                        FilaInventario(
+                            item: item,
+                            alEnviar: { Task { await app.enviarAFarmacia(item.id) } },
+                            alReponer: { itemParaReponer = item }
+                        )
                     }
                 }
 
@@ -24,6 +34,10 @@ struct MedicinasView: View {
                 }
             }
             .navigationTitle("Medicinas")
+            .refreshable { await app.recargar() }
+            .sheet(item: $itemParaReponer) { item in
+                ReposicionView(item: item)
+            }
         }
     }
 }
@@ -31,6 +45,7 @@ struct MedicinasView: View {
 struct FilaInventario: View {
     let item: ItemInventario
     var alEnviar: () -> Void
+    var alReponer: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -65,53 +80,63 @@ struct FilaInventario: View {
                         .buttonStyle(.borderedProminent)
                 }
             }
+
+            Button("Registrar reposición", action: alReponer)
+                .buttonStyle(.bordered)
         }
         .padding(.vertical, 4)
     }
 }
 
-// MARK: - Notas de voz (RF-06, RF-07)
+// MARK: - Reposición: se registran las pastillas que llegaron de la farmacia
 
-struct VozView: View {
+struct ReposicionView: View {
     @EnvironmentObject var app: AppState
+    @Environment(\.dismiss) private var dismiss
+    let item: ItemInventario
+
+    @State private var cantidad = 10
+    @State private var error: String?
+    @State private var guardando = false
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Notas de \(app.paciente.nombre)") {
-                    ForEach(app.notas) { nota in
-                        HStack(spacing: 12) {
-                            Image(systemName: "play.circle.fill")
-                                .font(.title2)
-                                .foregroundColor(.teal)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(nota.fecha)
-                                    .font(.headline)
-                                Text(nota.autor)
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                            Text(nota.duracion)
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                                .monospacedDigit()
-                        }
+            Form {
+                Section(item.nombre) {
+                    Text("Existencias actuales: \(item.cantidad) · umbral \(item.umbral)")
+                    Stepper("Cantidad recibida: \(cantidad)", value: $cantidad, in: 1...1000)
+                }
+
+                if let error {
+                    Section {
+                        Text(error)
+                            .foregroundColor(.red)
                     }
                 }
-            }
-            .navigationTitle("Notas de voz")
-            .safeAreaInset(edge: .bottom) {
-                Button {
-                    // Grabación pendiente de implementar.
-                } label: {
-                    Label("Grabar nota (próximamente)", systemImage: "mic.fill")
-                        .frame(maxWidth: .infinity)
+
+                Section {
+                    Button(guardando ? "Guardando..." : "Registrar reposición") {
+                        guardando = true
+                        error = nil
+                        Task {
+                            let fallo = await app.reponer(item.id, cantidad: cantidad)
+                            guardando = false
+                            if let fallo {
+                                error = fallo
+                            } else {
+                                dismiss()
+                            }
+                        }
+                    }
+                    .disabled(guardando)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(true)
-                .padding()
+            }
+            .navigationTitle("Reposición")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancelar") { dismiss() }
+                }
             }
         }
     }
@@ -122,6 +147,7 @@ struct VozView: View {
 struct AjustesView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.dismiss) private var dismiss
+    @State private var confirmarRestablecer = false
 
     var body: some View {
         NavigationStack {
@@ -135,12 +161,31 @@ struct AjustesView: View {
                         .foregroundColor(.secondary)
                 }
 
+                Section("Recordatorios") {
+                    Toggle("Recordar cada dosis", isOn: $app.recordatorios)
+                    Text("Aviso a la hora de la dosis y otro \(Dosis.toleranciaMinutos) minutos después si sigue pendiente. Si no llegan, revisa Ajustes del iPhone > Notificaciones.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                    Button("Enviar recordatorio de prueba") {
+                        Task { await app.enviarRecordatorioDePrueba() }
+                    }
+                }
+
                 Section("Servidor") {
                     TextField("http://192.168.1.20:3000", text: $app.serverURL)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .disabled(app.demoMode)
+                }
+
+                Section("Datos") {
+                    Button("Restablecer datos de demostración", role: .destructive) {
+                        confirmarRestablecer = true
+                    }
+                    Text("Borra las dosis registradas y el historial, y vuelve a los datos de ejemplo.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
 
                 if let cuidador = app.cuidador {
@@ -153,6 +198,12 @@ struct AjustesView: View {
                 }
             }
             .navigationTitle("Ajustes")
+            .confirmationDialog("¿Restablecer los datos de demostración?",
+                                isPresented: $confirmarRestablecer,
+                                titleVisibility: .visible) {
+                Button("Restablecer", role: .destructive) { app.restablecerDatosDemo() }
+                Button("Cancelar", role: .cancel) { }
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Listo") { dismiss() }
